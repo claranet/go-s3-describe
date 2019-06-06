@@ -15,6 +15,9 @@ Usage of s3-describe:
 
 ![screenshot](./screenshot.png)
 
+* *red* : Public Bucket
+* *yellow* : Empty Bucket
+
 # Author
 
 Thomas Labarussias (thomas.labarussias@fr.clara.net - https://github.com/Issif)
