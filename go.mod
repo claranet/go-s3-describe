@@ -1,5 +1,4 @@
-module git.fr.clara.net/claranet/cloudnative/projects/cloud/aws/tools/s3-describe
-
+module github.com/claranet/go-s3-describe
 go 1.12
 
 require (
