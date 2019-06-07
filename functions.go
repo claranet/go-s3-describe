@@ -2,6 +2,7 @@ package main
 
 import (
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -10,56 +11,74 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-// getAllS3Buckets
-func getAllS3Buckets(sess *session.Session) []s3Bucket {
+// getS3Buckets
+func getS3Buckets(sess *session.Session) {
 	client := s3.New(sess)
 	input := &s3.ListBucketsInput{}
 	response, _ := client.ListBuckets(input)
 	region := *sess.Config.Region
 
-	var s3Buckets []s3Bucket
+	var wg sync.WaitGroup
 
 	for _, b := range response.Buckets {
-		var s3Bucket s3Bucket
-		s3Bucket.name = *b.Name
-		s3Bucket.numberOfObjects = make([]float64, 1)
-		s3Bucket.bucketSizeBytes = make(map[string]float64)
-		s3Bucket.bucketSizeBytes = map[string]float64{"StandardStorage": 0.0, "StandardIAStorage": 0.0, "ReducedRedundancyStorage": 0.0, "GlacierStorage": 0.0}
-		input := &s3.GetBucketLocationInput{Bucket: aws.String(*b.Name)}
-		result, _ := client.GetBucketLocation(input)
-		if result.LocationConstraint == nil {
-			s3Bucket.region = "us-east-1"
-		}
-		if result.LocationConstraint != nil {
-			switch *result.LocationConstraint {
-			case "EU":
-				s3Bucket.region = "eu-west-1"
-			default:
-				s3Bucket.region = *result.LocationConstraint
-			}
-		}
-
 		wg.Add(1)
-		s3Bucket.checkS3Policy(sess)
+		go func(c *s3.Bucket) {
+			var s3Bucket s3Bucket
+			defer wg.Done()
+			s3Bucket.name = *c.Name
+			s3Bucket.bucketSizeBytes = make(map[string]float64)
+			s3Bucket.bucketSizeBytes = map[string]float64{"StandardStorage": 0.0, "StandardIAStorage": 0.0, "ReducedRedundancyStorage": 0.0, "GlacierStorage": 0.0}
+			input := &s3.GetBucketLocationInput{Bucket: aws.String(*c.Name)}
+			result, _ := client.GetBucketLocation(input)
+			if result.LocationConstraint == nil {
+				s3Bucket.region = "us-east-1"
+			}
+			if result.LocationConstraint != nil {
+				switch *result.LocationConstraint {
+				case "EU":
+					s3Bucket.region = "eu-west-1"
+				default:
+					s3Bucket.region = *result.LocationConstraint
+				}
+			}
 
-		if s3Bucket.region == region {
-			wg.Add(1)
-			go s3Bucket.getStats(sess)
-		} else {
-			sessCopy := sess.Copy(&aws.Config{Region: aws.String("us-east-1")})
-			wg.Add(1)
-			go s3Bucket.getStats(sessCopy)
-		}
-		s3Buckets = append(s3Buckets, s3Bucket)
+			s3Bucket.checkS3Policy(sess)
+			s3Bucket.checkACL(sess)
+
+			if s3Bucket.region == region {
+				s3Bucket.getStats(sess)
+			} else {
+				sessCopy := sess.Copy(&aws.Config{Region: aws.String("us-east-1")})
+				s3Bucket.getStats(sessCopy)
+			}
+			s3Buckets = append(s3Buckets, s3Bucket)
+		}(b)
 	}
 	wg.Wait()
-	return s3Buckets
+}
+
+func (s3Bucket *s3Bucket) checkS3Policy(sess *session.Session) {
+	client := s3.New(sess)
+	input := &s3.GetBucketPolicyStatusInput{Bucket: aws.String(s3Bucket.name)}
+	response, _ := client.GetBucketPolicyStatus(input)
+	if response.PolicyStatus != nil {
+		s3Bucket.isPublic = *response.PolicyStatus.IsPublic
+	}
+}
+
+func (s3Bucket *s3Bucket) checkACL(sess *session.Session) {
+	client := s3.New(sess)
+	input := &s3.GetBucketAclInput{Bucket: aws.String(s3Bucket.name)}
+	response, _ := client.GetBucketAcl(input)
+	for _, acl := range response.Grants {
+		if (*acl.Permission == "READ" || *acl.Permission == "FULL_CONTROL") && *acl.Grantee.Type == "Group" {
+			s3Bucket.isPublic = true
+		}
+	}
 }
 
 // getStats retrieves main statistics of buckets
 func (s3Bucket *s3Bucket) getStats(sess *session.Session) {
-	defer wg.Done()
-
 	client := cloudwatch.New(sess) // New client for CloudWatch
 	currentTime := time.Now()
 	previousTime := currentTime.AddDate(0, 0, -2)
@@ -129,7 +148,6 @@ func (s3Bucket *s3Bucket) getStats(sess *session.Session) {
 	sendReq = func() {
 		response, err = client.GetMetricData(parameters)
 		if err != nil {
-			// fmt.Println(err)
 			time.Sleep(time.Second * 1)
 			sendReq()
 		}
@@ -139,31 +157,9 @@ func (s3Bucket *s3Bucket) getStats(sess *session.Session) {
 
 	for _, r := range response.MetricDataResults {
 		if *r.Id == "m0" && r.Values != nil {
-			s3Bucket.numberOfObjects[0] = *r.Values[0]
+			s3Bucket.numberOfObjects = *r.Values[0]
 		} else if *r.Id != "m0" && r.Values != nil {
 			s3Bucket.bucketSizeBytes[*r.Label] = *r.Values[0]
 		}
 	}
 }
-
-func (s3Bucket *s3Bucket) checkS3Policy(sess *session.Session) {
-	defer wg.Done()
-	client := s3.New(sess)
-	input := &s3.GetBucketPolicyStatusInput{Bucket: aws.String(s3Bucket.name)}
-	response, _ := client.GetBucketPolicyStatus(input)
-	if response.PolicyStatus != nil {
-		s3Bucket.isPublic = *response.PolicyStatus.IsPublic
-	}
-}
-
-// not used, just in case
-// func (s3Bucket *s3Bucket) checkACL(sess *session.Session) {
-// 	client := s3.New(sess)
-// 	input := &s3.GetBucketAclInput{Bucket: aws.String(s3Bucket.name)}
-// 	response, _ := client.GetBucketAcl(input)
-// 	for _, acl := range response.Grants {
-// 		if (*acl.Permission == "READ" || *acl.Permission == "FULL_CONTROL") && *acl.Grantee.Type == "Group" {
-// 			s3Bucket.isPublic[0] = true
-// 		}
-// 	}
-// }

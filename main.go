@@ -51,7 +51,8 @@ func main() {
 		}
 	}(progressBar)
 
-	s3Buckets = getAllS3Buckets(sess)
+	getS3Buckets(sess)
+	wg.Wait()
 
 	fmt.Fprintf(progressBar, "                   \n\n")
 	progressBar.Stop()

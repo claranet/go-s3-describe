@@ -20,7 +20,7 @@ func PrintResult(s3Buckets *[]s3Bucket) error {
 			v.name,
 			v.region,
 			strconv.FormatBool(v.isPublic),
-			fmt.Sprintf("%v", v.numberOfObjects[0]),
+			fmt.Sprintf("%v", v.numberOfObjects),
 			bytefmt.ByteSize(uint64(v.bucketSizeBytes["StandardStorage"])),
 			bytefmt.ByteSize(uint64(v.bucketSizeBytes["StandardIAStorage"])),
 			bytefmt.ByteSize(uint64(v.bucketSizeBytes["ReducedRedundancyStorage"])),
